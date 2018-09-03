@@ -11,19 +11,15 @@ import static io.protostuff.WireFormat.WIRETYPE_VARINT;
 import static io.protostuff.WireFormat.makeTag;
 
 import java.io.IOException;
-import java.lang.invoke.MethodHandle;
-import java.lang.invoke.MethodHandles;
-import java.lang.invoke.MethodType;
 import java.nio.ByteBuffer;
 import java.nio.charset.StandardCharsets;
 
 import io.netty.buffer.ByteBuf;
+import rpc.turbo.serialization.SerializationConstants;
 import rpc.turbo.util.ByteBufUtils;
 import rpc.turbo.util.UnsafeStringUtils;
 
 public final class ByteBufOutput implements Output {
-	private static final MethodHandle byteStringGetBytesMethodHandle;
-
 	private ByteBuf byteBuf;
 
 	public ByteBufOutput(final ByteBuf buffer) {
@@ -38,15 +34,14 @@ public final class ByteBufOutput implements Output {
 		return byteBuf;
 	}
 
+	public void writeRawInt32(int value) throws IOException {
+		ByteBufUtils.writeVarInt(byteBuf, value);
+	}
+
 	@Override
 	public void writeInt32(int fieldNumber, int value, boolean repeated) throws IOException {
-		if (value < 0) {
-			ByteBufUtils.writeVarInt(byteBuf, makeTag(fieldNumber, WIRETYPE_VARINT));
-			ByteBufUtils.writeVarLong(byteBuf, value);
-		} else {
-			ByteBufUtils.writeVarInt(byteBuf, makeTag(fieldNumber, WIRETYPE_VARINT));
-			ByteBufUtils.writeVarInt(byteBuf, value);
-		}
+		ByteBufUtils.writeVarInt(byteBuf, makeTag(fieldNumber, WIRETYPE_VARINT));
+		ByteBufUtils.writeVarInt(byteBuf, value);
 	}
 
 	@Override
@@ -121,9 +116,37 @@ public final class ByteBufOutput implements Output {
 		byteBuf.writeByte(value ? (byte) 0x01 : 0x00);
 	}
 
+	public void writeRawBool(boolean value) throws IOException {
+		byteBuf.writeByte(value ? (byte) 0x01 : 0x00);
+	}
+
 	@Override
 	public void writeEnum(int fieldNumber, int number, boolean repeated) throws IOException {
 		writeInt32(fieldNumber, number, repeated);
+	}
+
+	public void writeRawString(String value) throws IOException {
+		if (value == null) {
+			byteBuf.writeByte(SerializationConstants.STRING_NULL);
+			return;
+		}
+
+		if (value.length() == 0) {
+			byteBuf.writeByte(SerializationConstants.STRING_EMPTY);
+			return;
+		}
+
+		byte[] bytes;
+		if (UnsafeStringUtils.isLatin1(value)) {
+			byteBuf.writeByte(SerializationConstants.STRING_LATIN1);
+			bytes = UnsafeStringUtils.getLatin1Bytes(value);
+		} else {
+			byteBuf.writeByte(SerializationConstants.STRING_UTF8);
+			bytes = value.getBytes(StandardCharsets.UTF_8);
+		}
+
+		ByteBufUtils.writeVarInt(byteBuf, bytes.length);
+		byteBuf.writeBytes(bytes, 0, bytes.length);
 	}
 
 	@Override
@@ -164,12 +187,7 @@ public final class ByteBufOutput implements Output {
 
 	@Override
 	public void writeBytes(int fieldNumber, ByteString value, boolean repeated) throws IOException {
-		try {
-			byte[] bytes = (byte[]) byteStringGetBytesMethodHandle.invokeExact(value);
-			writeByteArray(fieldNumber, bytes, repeated);
-		} catch (Throwable e) {
-			throw new IOException(e);
-		}
+		writeByteArray(fieldNumber, value.getBytes(), repeated);
 	}
 
 	@Override
@@ -204,15 +222,6 @@ public final class ByteBufOutput implements Output {
 		ByteBufUtils.writeVarInt(byteBuf, value.readableBytes());
 
 		byteBuf.writeBytes(value);
-	}
-
-	static {
-		try {
-			byteStringGetBytesMethodHandle = MethodHandles.privateLookupIn(ByteString.class, MethodHandles.lookup())
-					.findVirtual(ByteString.class, "getBytes", MethodType.methodType(byte[].class));
-		} catch (Exception e) {
-			throw new Error(e);
-		}
 	}
 
 }

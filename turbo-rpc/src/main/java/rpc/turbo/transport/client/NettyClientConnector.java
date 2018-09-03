@@ -22,9 +22,13 @@ import rpc.turbo.config.HostPort;
 import rpc.turbo.serialization.Serializer;
 import rpc.turbo.transport.client.future.RequestWithFuture;
 import rpc.turbo.transport.client.handler.TurboChannelInitializer;
+import rpc.turbo.transport.client.sender.BatchSender;
+import rpc.turbo.transport.client.sender.Sender;
 
 final class NettyClientConnector implements Closeable {
 	private static final Log logger = LogFactory.getLog(NettyClientConnector.class);
+
+	public static final int MAX_SEND_BUFFER_SIZE = 1024;
 
 	public final HostPort serverAddress;
 
@@ -33,7 +37,7 @@ final class NettyClientConnector implements Closeable {
 	private final int connectCount;
 
 	public volatile HostPort clientAddress;
-	private volatile Channel[] channels;
+	private volatile Sender[] senders;
 
 	/**
 	 * 
@@ -61,14 +65,12 @@ final class NettyClientConnector implements Closeable {
 	 * @param channelIndex
 	 *            发送数据的channel
 	 * 
-	 * @param request
+	 * @param requestWithFuture
 	 *            请求数据
 	 */
 	void send(int channelIndex, RequestWithFuture requestWithFuture) {
 		Objects.requireNonNull(requestWithFuture, "request is null");
-
-		Channel channel = channels[channelIndex];
-		channel.writeAndFlush(requestWithFuture, channel.voidPromise());
+		senders[channelIndex].send(requestWithFuture);
 	}
 
 	void connect() throws InterruptedException {
@@ -91,20 +93,23 @@ final class NettyClientConnector implements Closeable {
 
 		bootstrap.handler(new TurboChannelInitializer(serializer));
 
-		Channel[] newChannels = new Channel[connectCount];
+		Sender[] newSenders = new Sender[connectCount];
 		for (int i = 0; i < connectCount; i++) {
-			newChannels[i] = bootstrap.connect(serverAddress.host, serverAddress.port).sync().channel();
+			Channel channel = bootstrap.connect(serverAddress.host, serverAddress.port).sync().channel();
+			newSenders[i] = new BatchSender(channel);
 
 			if (logger.isInfoEnabled()) {
 				logger.info(serverAddress + " connect " + i + "/" + connectCount);
 			}
+
+			if (i == 0) {
+				InetSocketAddress insocket = (InetSocketAddress) channel.localAddress();
+				clientAddress = new HostPort(insocket.getAddress().getHostAddress(), 0);
+			}
 		}
 
-		InetSocketAddress insocket = (InetSocketAddress) newChannels[0].localAddress();
-		clientAddress = new HostPort(insocket.getAddress().getHostAddress(), 0);
-
-		Channel[] old = channels;
-		channels = newChannels;
+		Sender[] old = senders;
+		senders = newSenders;
 
 		if (old != null) {
 			for (int i = 0; i < old.length; i++) {
@@ -121,22 +126,22 @@ final class NettyClientConnector implements Closeable {
 
 	@Override
 	public void close() throws IOException {
-
-		if (channels == null) {
+		if (senders == null) {
 			return;
 		}
 
-		for (int i = 0; i < channels.length; i++) {
+		final Sender[] senders = this.senders;
+		this.senders = null;
+
+		for (int i = 0; i < senders.length; i++) {
 			try {
-				channels[i].close();
+				senders[i].close();
 			} catch (Exception e) {
 				if (logger.isWarnEnabled()) {
 					logger.warn("关闭出错", e);
 				}
 			}
 		}
-
-		channels = null;
 	}
 
 }
